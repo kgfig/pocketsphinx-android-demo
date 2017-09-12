@@ -37,12 +37,16 @@ import android.os.AsyncTask;
 import android.os.Bundle;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.Map;
 
 import edu.cmu.pocketsphinx.Assets;
 import edu.cmu.pocketsphinx.Hypothesis;
@@ -52,39 +56,44 @@ import edu.cmu.pocketsphinx.SpeechRecognizerSetup;
 
 import static android.widget.Toast.makeText;
 
-public class PocketSphinxActivity extends Activity implements
-        RecognitionListener {
+public class SpeechActivity extends Activity implements RecognitionListener {
 
     /* Named searches allow to quickly reconfigure the decoder */
-    private static final String KWS_SEARCH = "wakeup";
-    private static final String FORECAST_SEARCH = "forecast";
-    private static final String DIGITS_SEARCH = "digits";
-    private static final String PHONE_SEARCH = "phones";
-    private static final String MENU_SEARCH = "menu";
-
-    /* Keyword we are looking for to activate menu */
-    private static final String KEYPHRASE = "oh mighty computer";
+    private static final String KWS_SEARCH = "fillers";
 
     /* Used to handle permission request */
     private static final int PERMISSIONS_REQUEST_RECORD_AUDIO = 1;
 
     private SpeechRecognizer recognizer;
-    private HashMap<String, Integer> captions;
+    private String partialResult;
+    private Map<String, Integer> fillerCount;
+    private Button startRecordingBtn;
+    private boolean isRecording;
+    private TextView resultText, captionText;
 
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
 
-        // Prepare the data for UI
-        captions = new HashMap<String, Integer>();
-        captions.put(KWS_SEARCH, R.string.kws_caption);
-        captions.put(MENU_SEARCH, R.string.menu_caption);
-        captions.put(DIGITS_SEARCH, R.string.digits_caption);
-        captions.put(PHONE_SEARCH, R.string.phone_caption);
-        captions.put(FORECAST_SEARCH, R.string.forecast_caption);
+        partialResult = "";
+        fillerCount = new HashMap<>();
         setContentView(R.layout.main);
-        ((TextView) findViewById(R.id.caption_text))
-                .setText("Preparing the recognizer");
+        captionText = (TextView) findViewById(R.id.caption_text);
+        resultText = (TextView) findViewById(R.id.result_text);
+        startRecordingBtn = (Button) findViewById(R.id.start);
+
+        captionText.setText("Preparing the recognizer");
+
+        startRecordingBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (isRecording) {
+                    stopRecording();
+                } else {
+                    startRecording();
+                }
+            }
+        });
 
         // Check if user has given permission to record audio
         int permissionCheck = ContextCompat.checkSelfPermission(getApplicationContext(), Manifest.permission.RECORD_AUDIO);
@@ -95,6 +104,22 @@ public class PocketSphinxActivity extends Activity implements
         runRecognizerSetup();
     }
 
+    private void stopRecording() {
+        isRecording = false;
+        recognizer.stop();
+        startRecordingBtn.setText("Start");
+    }
+
+    private void startRecording() {
+        startRecordingBtn.setText("Stop");
+        recognizer.stop();
+
+        isRecording = true;
+        recognizer.startListening(KWS_SEARCH);
+
+        captionText.setText(R.string.kws_caption);
+    }
+
     private void runRecognizerSetup() {
         // Recognizer initialization is a time-consuming and it involves IO,
         // so we execute it in async task
@@ -102,7 +127,7 @@ public class PocketSphinxActivity extends Activity implements
             @Override
             protected Exception doInBackground(Void... params) {
                 try {
-                    Assets assets = new Assets(PocketSphinxActivity.this);
+                    Assets assets = new Assets(SpeechActivity.this);
                     File assetDir = assets.syncAssets();
                     setupRecognizer(assetDir);
                 } catch (IOException e) {
@@ -117,7 +142,7 @@ public class PocketSphinxActivity extends Activity implements
                     ((TextView) findViewById(R.id.caption_text))
                             .setText("Failed to init recognizer " + result);
                 } else {
-                    switchSearch(KWS_SEARCH);
+                    startRecording();
                 }
             }
         }.execute();
@@ -142,6 +167,7 @@ public class PocketSphinxActivity extends Activity implements
         super.onDestroy();
 
         if (recognizer != null) {
+            recognizer.removeListener(this);
             recognizer.cancel();
             recognizer.shutdown();
         }
@@ -158,32 +184,76 @@ public class PocketSphinxActivity extends Activity implements
             return;
 
         String text = hypothesis.getHypstr();
-        if (text.equals(KEYPHRASE))
-            switchSearch(MENU_SEARCH);
-        else if (text.equals(DIGITS_SEARCH))
-            switchSearch(DIGITS_SEARCH);
-        else if (text.equals(PHONE_SEARCH))
-            switchSearch(PHONE_SEARCH);
-        else if (text.equals(FORECAST_SEARCH))
-            switchSearch(FORECAST_SEARCH);
-        else
-            ((TextView) findViewById(R.id.result_text)).setText(text);
+        Toast.makeText(this, "Partial: " + text, Toast.LENGTH_SHORT).show();
+        resultText.setText(text + "\n------------\n" + partialResult);
+        Log.i(this.getClass().getName(), "Partial: " + text);
+
+        if (partialResult.isEmpty()) {
+            countWord(text);
+        } else if (!partialResult.equalsIgnoreCase(text) && text.contains(partialResult)) {
+            //[new word]   [old word]
+            //[------text-----------]
+            String newPhrase = text.substring(0, text.length() - partialResult.length()).trim();
+            for (String word : newPhrase.split("\\s+")) {
+                countWord(word);
+            }
+        }
+        partialResult = text;
+    }
+
+    private void countWord(String word) {
+        word = word.trim();
+
+        if (fillerCount.containsKey(word)) {
+            fillerCount.put(word, fillerCount.get(word) + 1);
+        } else {
+            fillerCount.put(word, 1);
+        }
+        makeText(this, "Count word: " + word + "=" + fillerCount.get(word), Toast.LENGTH_LONG).show();
+    }
+
+    private void displayFillers() {
+        StringBuilder sb = new StringBuilder();
+
+        for (String fillerWord : fillerCount.keySet()) {
+            sb.append(fillerWord);
+            sb.append("\t=\t");
+            sb.append(fillerCount.get(fillerWord));
+            sb.append("\n");
+        }
+
+        resultText.setText(sb.toString());
+        Log.i(this.getClass().getName(), sb.toString());
+        fillerCount.clear();
     }
 
     /**
-     * This callback is called when we stop the recognizer.
+     * Callback when SpeechRecognizer.stop() is called
      */
     @Override
     public void onResult(Hypothesis hypothesis) {
-        ((TextView) findViewById(R.id.result_text)).setText("");
+        resultText.setText("Ended");
+
         if (hypothesis != null) {
+            displayFillers();
+
             String text = hypothesis.getHypstr();
-            makeText(getApplicationContext(), text, Toast.LENGTH_SHORT).show();
+            Log.i(this.getClass().getName(), "--------END RESULT------");
+            Log.i(this.getClass().getName(), "Text[" + text + "]");
+            Log.i(this.getClass().getName(), "------------------------");
+            String[] words = text.split("\\s+");
+
+            for (String word : words) {
+                countWord(word);
+            }
+
+            displayFillers();
         }
     }
 
     @Override
     public void onBeginningOfSpeech() {
+        Toast.makeText(this, "Started", Toast.LENGTH_SHORT).show();
     }
 
     /**
@@ -191,21 +261,7 @@ public class PocketSphinxActivity extends Activity implements
      */
     @Override
     public void onEndOfSpeech() {
-        if (!recognizer.getSearchName().equals(KWS_SEARCH))
-            switchSearch(KWS_SEARCH);
-    }
-
-    private void switchSearch(String searchName) {
-        recognizer.stop();
-
-        // If we are not spotting, start listening with timeout (10000 ms or 10 seconds).
-        if (searchName.equals(KWS_SEARCH))
-            recognizer.startListening(searchName);
-        else
-            recognizer.startListening(searchName, 10000);
-
-        String caption = getResources().getString(captions.get(searchName));
-        ((TextView) findViewById(R.id.caption_text)).setText(caption);
+        ((TextView) findViewById(R.id.caption_text)).setText("Speech ended. Click on stop if you want to stop keyword search.");
     }
 
     private void setupRecognizer(File assetsDir) throws IOException {
@@ -215,9 +271,7 @@ public class PocketSphinxActivity extends Activity implements
         recognizer = SpeechRecognizerSetup.defaultSetup()
                 .setAcousticModel(new File(assetsDir, "en-us-ptm"))
                 .setDictionary(new File(assetsDir, "cmudict-en-us.dict"))
-
                 .setRawLogDir(assetsDir) // To disable logging of raw audio comment out this call (takes a lot of space on the device)
-
                 .getRecognizer();
         recognizer.addListener(this);
 
@@ -226,23 +280,8 @@ public class PocketSphinxActivity extends Activity implements
          */
 
         // Create keyword-activation search.
-        recognizer.addKeyphraseSearch(KWS_SEARCH, KEYPHRASE);
-
-        // Create grammar-based search for selection between demos
-        File menuGrammar = new File(assetsDir, "menu.gram");
-        recognizer.addGrammarSearch(MENU_SEARCH, menuGrammar);
-
-        // Create grammar-based search for digit recognition
-        File digitsGrammar = new File(assetsDir, "digits.gram");
-        recognizer.addGrammarSearch(DIGITS_SEARCH, digitsGrammar);
-
-        // Create language model search
-        File languageModel = new File(assetsDir, "weather.dmp");
-        recognizer.addNgramSearch(FORECAST_SEARCH, languageModel);
-
-        // Phonetic search
-        File phoneticModel = new File(assetsDir, "en-phone.dmp");
-        recognizer.addAllphoneSearch(PHONE_SEARCH, phoneticModel);
+        File keywordListFile = new File(assetsDir, "keyword.list");
+        recognizer.addKeywordSearch(KWS_SEARCH, keywordListFile);
     }
 
     @Override
@@ -252,6 +291,6 @@ public class PocketSphinxActivity extends Activity implements
 
     @Override
     public void onTimeout() {
-        switchSearch(KWS_SEARCH);
+        stopRecording();
     }
 }
